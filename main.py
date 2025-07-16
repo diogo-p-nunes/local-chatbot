@@ -1,10 +1,11 @@
 import sys
 import argparse
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, trim_messages
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import START, END, MessagesState, StateGraph
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages.utils import count_tokens_approximately
 import queue
 import threading
 from rich.console import Console
@@ -41,20 +42,31 @@ prompt_template = ChatPromptTemplate.from_messages(
     ]
 )
 
+# Manage conversation history for no context overflow
+memory = MemorySaver()
+trimmer = trim_messages(
+    max_tokens=800,
+    strategy="last",
+    token_counter=count_tokens_approximately,
+    include_system=True,
+    allow_partial=False,
+    start_on="human",
+)
+
 # Define the function that calls the model
 def call_model(state: MessagesState):
-    prompt = prompt_template.invoke(state)
+    trimmed_messages = trimmer.invoke(state["messages"])
+    prompt = prompt_template.invoke(
+        {"messages": trimmed_messages}
+    )
     response = model.invoke(prompt)
     return {"messages": response}
 
-# Define the agent graph
+# Define the agent graph; compile agent with memory for chat history
 workflow = StateGraph(state_schema=MessagesState)
 workflow.add_edge(START, "model")
 workflow.add_node("model", call_model)
 workflow.add_edge("model", END)
-
-# Compile agent with memory for chat history
-memory = MemorySaver()
 agent = workflow.compile(checkpointer=memory)
 
 # Initialize console for rich output

@@ -1,5 +1,5 @@
 # local-chatbot
-Implementation of a local chatbot with CLI interface
+Implementation of a local chatbot with CLI interface.  
 Follow the instructions below to run this app locally (clone this repo and cd into it).
 
 ### Create conda environment and install dependencies
