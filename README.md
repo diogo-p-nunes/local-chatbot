@@ -2,21 +2,21 @@
 Implementation of a local chatbot with CLI interface
 Follow the instructions below to run this app locally (clone this repo and cd into it).
 
-> Create conda environment and install dependencies
+### Create conda environment and install dependencies
 
 ```bash
 conda create -n "chatbot" python=3.12
 conda activate chatbot
 pip install -r requirements.txt
-````
+```
 
-> Launch local OpenAi-compatible server
+### Launch local OpenAi-compatible server
 
 ```bash
 vllm serve [Qwen/Qwen3-0.6B] --trust-remote-code [--max_model_len 1000]
 ```
 
-> On a new terminal window, run the main script
+### On a new terminal window, run the main script
 
 ```bash
 python main.py
