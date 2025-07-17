@@ -11,6 +11,8 @@ import threading
 from rich.console import Console
 from rich.prompt import Prompt
 from rich.markdown import Markdown
+from rich.text import Text
+import uuid
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(description="Chatbot parameters")
@@ -19,6 +21,7 @@ parser.add_argument("--openai_api_key", type=str, default="EMPTY")
 parser.add_argument("--openai_api_base", type=str, default="http://localhost:8000/v1")
 parser.add_argument("--max_tokens", type=int, default=500)
 parser.add_argument("--temperature", type=float, default=0)
+parser.add_argument("--stream", action="store_true")
 args = parser.parse_args()
 
 # Load model interface
@@ -28,7 +31,7 @@ model = ChatOpenAI(
     openai_api_base=args.openai_api_base,
     max_tokens=args.max_tokens,
     temperature=args.temperature,
-    streaming=True,
+    streaming=args.stream,
 )
 
 # Define the chat prompt template
@@ -36,7 +39,7 @@ prompt_template = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            "You are a helpful assistant. Answer all questions to the best of your ability. If you don't know the answer, just say 'I don't know'.",
+            "You are a helpful assistant. Answer all questions to the best of your ability.",
         ),
         MessagesPlaceholder(variable_name="messages"),
     ]
@@ -74,30 +77,36 @@ console = Console()
 
 def main() -> None:
     EXIT = "/bye"
-    history: list = []
+    # each launch of the script gets a unique thread ID
+    thread_id = str(uuid.uuid4()) 
 
     while True:
         user_text = Prompt.ask("[bold magenta]>[/bold magenta]")
         if user_text.strip() == EXIT:
             console.print("\n[bold green]>[/bold green]: [green]Good-bye.[/green]")
             return
-
-        history.append(HumanMessage(content=user_text))
+        input_message = [HumanMessage(content=user_text)]
 
         # --- run LangGraph ---
-        console.print("[bold green]>[/bold green]", end=": ")
-        full_response = ""
-        for chunk, metadata in agent.stream(
-            {"messages": history},
-            {"configurable": {"thread_id": "abc123"}},
-            stream_mode="messages",
-        ):
-            if isinstance(chunk, AIMessage):
-                full_response += chunk.content
-                console.print(f"[green]{chunk.content}[/green]", end="")
-
-        console.print("")
-        history.append(AIMessage(content=full_response))
+        label = Text(">:", style="bold green")
+        if args.stream:
+            console.print(label, end=" ")
+            for chunk, metadata in agent.stream(
+                {"messages": input_message},
+                {"configurable": {"thread_id": thread_id}},
+                stream_mode="messages",
+            ):
+                if isinstance(chunk, AIMessage):
+                    partial_answer = Text(chunk.content, style="green")
+                    console.print(partial_answer, style="green", end="")
+            console.print("")
+        else:
+            result = agent.invoke(
+                {"messages": input_message},
+                {"configurable": {"thread_id": thread_id}},
+            )
+            answer = Text(result["messages"][-1].content, style="green")
+            console.print(label, answer)
 
 if __name__ == "__main__":
     try:
