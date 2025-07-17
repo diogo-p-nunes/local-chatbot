@@ -1,7 +1,7 @@
 import sys
 import argparse
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, trim_messages
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, trim_messages, RemoveMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import START, END, MessagesState, StateGraph
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -13,6 +13,7 @@ from rich.prompt import Prompt
 from rich.markdown import Markdown
 from rich.text import Text
 import uuid
+from typing import Dict, List
 
 # Parse command line arguments
 parser = argparse.ArgumentParser(description="Chatbot parameters")
@@ -37,39 +38,64 @@ model = ChatOpenAI(
 # Define the chat prompt template
 prompt_template = ChatPromptTemplate.from_messages(
     [
-        (
-            "system",
-            "You are a helpful assistant. Answer all questions to the best of your ability.",
-        ),
+        MessagesPlaceholder(variable_name="system_prompt"),
         MessagesPlaceholder(variable_name="messages"),
     ]
 )
 
+
 # Manage conversation history for no context overflow
 memory = MemorySaver()
-trimmer = trim_messages(
-    max_tokens=800,
-    strategy="last",
-    token_counter=count_tokens_approximately,
-    include_system=True,
-    allow_partial=False,
-    start_on="human",
-)
+class SummarizedMessageState(MessagesState):
+    """State schema for messages with a summary."""
+    summary: str
 
-# Define the function that calls the model
-def call_model(state: MessagesState):
-    trimmed_messages = trimmer.invoke(state["messages"])
-    prompt = prompt_template.invoke(
-        {"messages": trimmed_messages}
-    )
+def summarize_messages(state: SummarizedMessageState) -> Dict:
+    print("(Summarizing messages...)")
+    prev_summary = state.get("summary", "")
+    if prev_summary:
+        prompt = (
+            f"This is a summary of the conversation to date: {prev_summary}\n\n"
+            "Update the summary by taking into account the new messages above:"
+        )
+    else:
+        prompt = "Create a summary of the conversation above:"
+
+    messages = state["messages"] + [HumanMessage(content=prompt)]
+    response = model.invoke(messages)
+    delete_messages = [RemoveMessage(id=m.id) for m in state["messages"][:-2]]
+    return {"summary": response.content, "messages": delete_messages}
+
+def call_model(state: SummarizedMessageState) -> dict:
+    system_prompt = "You are a helpful assistant. Answer all questions to the best of your ability."    
+    summary = state.get("summary", "")
+    if summary:
+        system_prompt += f"\n\nSummary of the conversation so far:\n{summary}"
+
+    # Inject both system and chat messages
+    prompt = prompt_template.invoke({
+        "system_prompt": [SystemMessage(content=system_prompt)],
+        "messages": state["messages"]
+    })
+    
     response = model.invoke(prompt)
     return {"messages": response}
 
+def decide_next(state: SummarizedMessageState) -> str:
+    length = len(state["messages"])
+    if length >= 10: return "summarize_messages"
+    return END
+
 # Define the agent graph; compile agent with memory for chat history
-workflow = StateGraph(state_schema=MessagesState)
-workflow.add_edge(START, "model")
-workflow.add_node("model", call_model)
-workflow.add_edge("model", END)
+workflow = StateGraph(state_schema=SummarizedMessageState)
+workflow.add_node("call_model", call_model)
+workflow.add_node("summarize_messages", summarize_messages)
+workflow.add_edge(START, "call_model")
+workflow.add_conditional_edges("call_model", decide_next, {
+    "summarize_messages": "summarize_messages",
+    END: END,
+})
+workflow.add_edge("summarize_messages", END)
 agent = workflow.compile(checkpointer=memory)
 
 # Initialize console for rich output
@@ -96,7 +122,7 @@ def main() -> None:
                 {"configurable": {"thread_id": thread_id}},
                 stream_mode="messages",
             ):
-                if isinstance(chunk, AIMessage):
+                if metadata.get("langgraph_node") == "call_model" and isinstance(chunk, AIMessage):
                     partial_answer = Text(chunk.content, style="green")
                     console.print(partial_answer, style="green", end="")
             console.print("")
